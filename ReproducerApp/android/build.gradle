@@ -1,12 +1,4 @@
 buildscript {
-    ext {
-        buildToolsVersion = "37.0.0"
-        minSdkVersion = 24
-        compileSdkVersion = 37
-        targetSdkVersion = 36
-        ndkVersion = "27.1.12297006"
-        kotlinVersion = "2.2.0"
-    }
     repositories {
         google()
         mavenCentral()
@@ -18,4 +10,15 @@ buildscript {
     }
 }
 
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+// The SDK, build-tools and Kotlin versions come from the Expo version catalog
+// rather than an `ext` block, so they stay consistent with the versions the
+// pinned Expo module set was built against.
+apply plugin: "expo-root-project"
 apply plugin: "com.facebook.react.rootproject"

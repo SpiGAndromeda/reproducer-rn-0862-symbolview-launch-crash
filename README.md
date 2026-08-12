@@ -2,78 +2,181 @@
 
 ![Build](https://github.com/SpiGAndromeda/reproducer-rn-0862-symbolview-launch-crash/workflows/Pre%20Merge%20Checks/badge.svg)
 
-This is your new React Native Reproducer project.
+A `react-native-community/reproducer-react-native` app carrying one `expo-symbols`
+`SymbolView`, pinned to the Expo SDK 57 module set that an iOS Release cold-launch
+crash depends on.
 
-# Reproducer TODO list
+**This commit is the working baseline.** It pins `react-native` 0.86.0 — the
+version Expo SDK 57 nominates — and launches clean. The commit that follows
+moves only that pin.
 
-- [x] 1. Create a new reproducer project.
-- [ ] 2. Git clone your repository locally.
-- [ ] 3. Edit the project to reproduce the failure you're seeing.
-- [ ] 4. Push your changes, so that Github Actions can run the CI.
-- [ ] 5. Make sure the repository is public and share the link with the issue you reported.
+| | |
+|---|---|
+| `react-native` | 0.86.0 |
+| Cold launches crashed | **0 of 10** |
+| React arm64 UUID | `61086F4A-30F5-3EA0-A72A-2C94C71C7AAC` (release 0.86.0) |
+| hermesvm arm64 UUID | `45EC9B08-1175-38E9-A03B-F3544286F1F1` (release 250829098.0.14) |
 
-# How to use this Reproducer
+## The app
 
-This project has been created with `npx @react-native-community/cli init` and is a vanilla React Native app.
+`ReproducerApp/App.tsx` is a centered `View` holding one `Text` node and one
+`SymbolView`. Nothing else. Larger configurations — long text corpora, several
+font families, navigation, reanimated animations, storage IO — were tried first
+and reproduced nothing; the trigger is one Expo module view rather than
+accumulated load.
 
-> [!IMPORTANT]  
-> Make sure you have completed the [React Native - Environment Setup](https://reactnative.dev/docs/set-up-your-environment) so that you have a working environment locally.
+`expo-symbols` renders through SF Symbols on iOS and falls back to JavaScript on
+Android, so only the iOS build is expected to reproduce anything. Android is
+here because the repository's CI builds it.
 
-## Step 1: Start the Metro Server
+## What the template app needed before the crash could appear
 
-First, you will need to start **Metro**, the JavaScript _bundler_ that ships _with_ React Native.
+The generated template is a bare React Native app. Converting it to Expo modules
+is most of this repository's diff, and three of those changes are not obvious.
+`install-expo-modules` does not support this SDK, so every step is applied by
+hand.
 
-To start Metro, run the following command from the _root_ of your React Native project:
+**Expo's precompiled modules must be switched on.** `ReproducerApp/ios/Podfile`
+sets `EXPO_USE_PRECOMPILED_MODULES=1`, which is the Expo prebuild default but
+not the CocoaPods default. With it, `ExpoModulesCore`, `ExpoFileSystem`,
+`ExpoFont` and `ExpoModulesWorklets` come from Expo as prebuilt **dynamic**
+xcframeworks and are embedded in the app bundle. Without it, CocoaPods compiles
+those four from source and links them statically into the app binary, and the
+otherwise identical app on `react-native` 0.86.2 **crashed 0 of 10** — it simply
+does not reproduce. This is the single least obvious requirement in the
+repository: an investigation starting from a bare `@react-native-community/cli`
+app rather than from `expo prebuild` would conclude the bug does not exist.
 
-```bash
-# using npm
-npm start
+**The app must enter through Expo's root component.** `ReproducerApp/index.js`
+uses `registerRootComponent` from `expo` rather than calling
+`AppRegistry.registerComponent` directly, which is what pulls the Expo runtime
+into the bundle. It registers under the module name `main`, so
+`AppDelegate.swift` and `MainActivity.kt` start React Native with that name
+rather than `ReproducerApp`. On its own this change did not make the crash
+appear — it is kept because it matches the shape the crash was originally
+characterised in, not because it was shown to be necessary.
 
-# OR using Yarn
-yarn start
+**The iOS deployment target must be raised to 16.4**, the Expo SDK 57 floor.
+The `Podfile` platform line raises the pod targets only; the app target keeps
+whatever the generated Xcode project carries, and at the template's 15.1 the
+build fails with `compiling for iOS 15.1, but module 'Expo' has a minimum
+deployment target of iOS 16.4`.
+
+One Android change is unrelated to Expo: the Gradle wrapper is 9.3.1 rather than
+the template's 9.4.1, matching what `react-native` 0.86 pairs with. On 9.4.1 the
+bundled Kotlin compiler dies with an internal error while compiling the React
+Native and Expo gradle plugins.
+
+The iOS `Podfile` also sets `RCT_USE_RN_DEP` and `RCT_USE_PREBUILT_RNCORE`, so
+the app links the prebuilt React core from Maven rather than building the core
+from source. A source-built core is a different binary and tests a different
+question.
+
+## Versions, and why they are pinned exactly
+
+`ReproducerApp/package.json` pins every dependency the bug depends on to an
+exact version, and pins the transitive Expo modules through npm `overrides`:
+
+| Package | Version | |
+|---|---|---|
+| `expo` | `57.0.8` | direct |
+| `expo-symbols` | `57.0.1` | direct |
+| `react` | `19.2.8` | direct |
+| `react-native` | `0.86.0` | direct |
+| `expo-constants` | `57.0.10` | override |
+| `expo-modules-core` | `57.0.7` | override |
+| `expo-file-system` | `57.0.1` | override |
+| `expo-asset` | `57.0.7` | override |
+| `expo-font` | `57.0.1` | override |
+| `expo-keep-awake` | `57.0.1` | override |
+
+**Install from the committed lockfile with `npm ci`.** The whole pin set is
+load-bearing, and a *partial* pin set is worse than none: pinning
+`expo-modules-core` while its siblings float upward produces a build that
+installs and compiles cleanly and then dies at launch in the dynamic linker
+(`Symbol not found: _$s15ExpoModulesCore10BaseModuleC11willDestroyyyFTj`,
+referenced from `ExpoFileSystem`). That is a `SIGABRT` in the `DYLD` namespace —
+a different failure that kills the process just as thoroughly, so any census has
+to read the termination signal before counting a dead process. That failure mode
+is only reachable at all because the modules are dynamically linked, which is
+the same reason the precompiled-modules switch above matters.
+
+## Environment
+
+Every measurement in this file was taken on:
+
+| | |
+|---|---|
+| macOS | 26.5.2 |
+| Xcode | 26.6 |
+| CocoaPods | 1.17.0 |
+| Node | 26.5.0 |
+| npm | 11.17.0 |
+| Simulator | iPhone 17, iOS 26.5 |
+
+The JS engine is Hermes, and the New Architecture is the only architecture
+`react-native` 0.86 ships.
+
+## Build and census
+
+```sh
+cd ReproducerApp
+npm ci
+cd ios && pod install
+rm -f Pods/.last_build_configuration
+xcodebuild -workspace ReproducerApp.xcworkspace -scheme ReproducerApp \
+  -configuration Release -sdk iphonesimulator -derivedDataPath ci-build \
+  -destination 'generic/platform=iOS Simulator' build
 ```
 
-## Step 2: Start your Application
+The built app lands at
+`ReproducerApp/ios/ci-build/Build/Products/Release-iphonesimulator/ReproducerApp.app`.
+It must be a **Release** build; Debug does not reproduce it.
 
-Let Metro Bundler run in its _own_ terminal. Open a _new_ terminal from the _root_ of your React Native project. Run the following command to start your _Android_ or _iOS_ app:
-
-### For Android
-
-```bash
-# using npm
-npm run android
-
-# OR using Yarn
-yarn android
+```sh
+tools/verify-flavors.sh ReproducerApp/ios/ci-build/Build/Products/Release-iphonesimulator/ReproducerApp.app
+tools/census.sh <simulator-udid> ReproducerApp/ios/ci-build/Build/Products/Release-iphonesimulator/ReproducerApp.app
 ```
 
-### For iOS
+Run the flavor gate before counting anything. A Release-configuration
+`xcodebuild` can silently link the *debug* flavor of the prebuilt React and
+hermes frameworks, and a census taken on such a build is an invalid run rather
+than a result.
 
-First, make sure you install dependencies with:
+A single launch proves nothing in either direction. The crash is probabilistic,
+so the working baseline has to survive a whole series and the crashing state has
+to die on most of one.
 
-```bash
-cd ios && bundle install && bundle exec pod install
-```
+## Tools
 
-Then you can run the iOS app with:
+### `tools/verify-flavors.sh <path-to-.app>`
 
-```bash
-# using npm
-npm run ios
+Reads the arm64 UUID of `Frameworks/React.framework/React` and
+`Frameworks/hermesvm.framework/hermesvm` with `dwarfdump --uuid` and classifies
+each against the known release and debug artifacts. Exits non-zero on a debug
+flavor or an unrecognised UUID.
 
-# OR using Yarn
-yarn ios
-```
+### `tools/census.sh <simulator-udid> <path-to-.app> [launches]`
 
-If everything is set up _correctly_, you should see your new app running in your _Android Emulator_ or _iOS Simulator_ shortly provided you have set up your emulator/simulator correctly.
+Reinstalls the app on the given simulator and performs 10 cold launches by
+default, terminating the app before each one and checking six seconds later
+whether the process is still alive. Prints a per-launch `alive` / `crashed` line
+and a `crashed: N/10` total.
 
-This is one way to run your app — you can also run it directly from within Android Studio and Xcode respectively.
+Do not run a heavy build concurrently with a census: the liveness check is a
+fixed wait, and CPU contention can move a launch across it.
 
-## Step 3: Modifying your App
+### `tools/crash-signature.sh <simulator-udid> <bundle-id> [minutes]`
 
-Now that you have successfully run the app, let's modify it.
+Prints the termination signal the simulator recorded for each launch.
+`SIGTRAP` (5) and `SIGSEGV` (11) are the crash under investigation; `SIGABRT`
+(6) is the dynamic-linker failure described above and invalidates the run.
 
-1. Open `App.tsx` in your text editor of choice and edit some lines.
-2. For **Android**: Press the <kbd>R</kbd> key twice or select **"Reload"** from the **Developer Menu** (<kbd>Ctrl</kbd> + <kbd>M</kbd> (on Window and Linux) or <kbd>Cmd ⌘</kbd> + <kbd>M</kbd> (on macOS)) to see your changes!
+macOS stops writing `.ips` crash reports after roughly 30 identical crashes in a
+day, so a crash count and a report count can legitimately disagree. This log
+query is the reliable fallback, and it has to run **inside** the simulator — the
+host's log store carries no records for a simulated process.
 
-   For **iOS**: Hit <kbd>Cmd ⌘</kbd> + <kbd>R</kbd> in your iOS Simulator to reload the app and see your changes!
+## License
+
+MIT — see `LICENSE`.

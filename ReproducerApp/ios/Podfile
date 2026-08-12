@@ -1,3 +1,6 @@
+# Expo modules autolinking must be required before react_native_pods so
+# use_expo_modules! is available inside the target.
+require File.join(File.dirname(`node --print "require.resolve('expo/package.json')"`), "scripts/autolinking")
 # Resolve react_native_pods.rb with node to allow for hoisting
 require Pod::Executable.execute_command('node', ['-p',
   'require.resolve(
@@ -5,7 +8,20 @@ require Pod::Executable.execute_command('node', ['-p',
     {paths: [process.argv[1]]},
   )', __dir__]).strip
 
-platform :ios, min_ios_version_supported
+# The bug under investigation lives in the prebuilt reactnative-core binary
+# from Maven, so the app must consume it rather than build the core from
+# source (this mirrors the Expo prebuild default).
+ENV['RCT_USE_RN_DEP'] ||= '1'
+ENV['RCT_USE_PREBUILT_RNCORE'] ||= '1'
+
+# Expo ships ExpoModulesCore and its siblings as precompiled dynamic
+# xcframeworks, and this is the Expo prebuild default. Compiling them from
+# source instead links them statically into the app binary and produces a
+# different binary layout, which does not reproduce the crash.
+ENV['EXPO_USE_PRECOMPILED_MODULES'] ||= '1'
+
+# Expo SDK 57 modules require 16.4; react-native 0.86 alone would accept 15.1.
+platform :ios, '16.4'
 prepare_react_native_project!
 
 linkage = ENV['USE_FRAMEWORKS']
@@ -15,6 +31,7 @@ if linkage != nil
 end
 
 target 'ReproducerApp' do
+  use_expo_modules!
   config = use_native_modules!
 
   use_react_native!(
